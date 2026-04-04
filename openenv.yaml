@@ -1,0 +1,53 @@
+name: sql-query-grader
+version: "1.0.0"
+description: >
+  An OpenEnv environment where an AI agent writes SQL queries to answer
+  data analysis questions. The environment runs queries against an in-memory
+  SQLite database and grades results with partial credit.
+author: solo-participant
+tags:
+  - openenv
+  - sql
+  - data-analysis
+  - code-generation
+
+observation_space:
+  type: object
+  description: Contains the database schema, a natural language question, and task metadata
+  fields:
+    task_id: string
+    difficulty: string
+    schema_description: string
+    question: string
+    hint: string
+
+action_space:
+  type: object
+  description: A single SQL query string the agent wants to execute
+  fields:
+    sql: string
+
+reward_space:
+  type: number
+  min: 0.0
+  max: 1.0
+  description: Partial credit score based on syntax validity, column correctness, row count, and exact match
+
+tasks:
+  - id: task_easy
+    name: Basic SELECT with filter and sort
+    difficulty: easy
+    description: Return all customers from California sorted by last name
+
+  - id: task_medium
+    name: JOIN with GROUP BY and aggregation
+    difficulty: medium
+    description: Find top 3 product categories by total revenue in 2023
+
+  - id: task_hard
+    name: Cohort retention with window functions
+    difficulty: hard
+    description: Compute 7-day rolling retention rate per user signup cohort
+
+entry_point: server:app
+port: 7860
