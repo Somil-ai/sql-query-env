@@ -3,7 +3,7 @@ FastAPI server exposing the OpenEnv HTTP API.
 Endpoints: POST /reset  POST /step  GET /state  GET /health  GET /tasks
 """
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
 from typing import Optional
 
@@ -19,17 +19,13 @@ app = FastAPI(
     version="1.0.0",
 )
 
-# One shared environment instance (single-user; fine for HF Spaces eval)
+# One shared environment instance
 _env = SQLQueryEnv()
 
 
 # ------------------------------------------------------------------
 # Request / Response schemas
 # ------------------------------------------------------------------
-
-class ResetRequest(BaseModel):
-    task_id: str = "task_easy"
-
 
 class StepRequest(BaseModel):
     sql: str
@@ -76,13 +72,22 @@ def list_tasks():
 
 
 @app.post("/reset", response_model=SQLObservation)
-def reset(request: ResetRequest):
+async def reset(request: Request):
     """
-    Start a new episode. Returns the initial observation with
-    database schema, the question, and a helpful hint.
+    Start a new episode. Accepts optional JSON body with task_id.
+    If body is empty or missing, defaults to task_easy.
     """
     try:
-        obs = _env.reset(task_id=request.task_id)
+        body = await request.json()
+    except Exception:
+        body = {}
+
+    task_id = "task_easy"
+    if isinstance(body, dict):
+        task_id = body.get("task_id", "task_easy") or "task_easy"
+
+    try:
+        obs = _env.reset(task_id=task_id)
         return obs
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -109,10 +114,6 @@ def state():
     """Return the current internal environment state (for debugging)."""
     return _env.state()
 
-
-# ------------------------------------------------------------------
-# Root redirect to docs
-# ------------------------------------------------------------------
 
 @app.get("/")
 def root():
