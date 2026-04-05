@@ -1,5 +1,11 @@
-# This file is required by the OpenEnv validator for multi-mode deployment.
-# The actual server is defined in server.py at the root.
+# Required by OpenEnv validator for multi-mode deployment.
+import uvicorn
 from server import app
 
-__all__ = ["app"]
+
+def main():
+    uvicorn.run(app, host="0.0.0.0", port=7860)
+
+
+if __name__ == "__main__":
+    main()
