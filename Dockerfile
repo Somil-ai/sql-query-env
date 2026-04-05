@@ -20,4 +20,4 @@ USER appuser
 EXPOSE 7860
 
 # Start the FastAPI server
-CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "7860"]
+CMD ["uvicorn", "app_main:app", "--host", "0.0.0.0", "--port", "7860"]

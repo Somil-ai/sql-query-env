@@ -1,6 +1,6 @@
 # Required by OpenEnv validator for multi-mode deployment.
 import uvicorn
-from server import app
+from app_main import app
 
 
 def main():
