@@ -2,15 +2,11 @@
 Inference Script — SQL Query Grader OpenEnv
 ============================================
 Runs a language model against all 3 tasks via the OpenAI client.
-Reads credentials from environment variables:
+
+Environment variables:
   API_BASE_URL  — LLM endpoint (default: HuggingFace router)
-  MODEL_NAME    — model identifier
-  HF_TOKEN      — your HuggingFace API key
-
-Usage:
-  python inference.py
-
-Runtime: ~2–5 minutes on 2 vCPU (well under the 20-min limit).
+  MODEL_NAME    — model identifier (default: Qwen/Qwen2.5-72B-Instruct)
+  HF_TOKEN      — your HuggingFace API key (required, no default)
 """
 
 import os
@@ -19,27 +15,26 @@ import json
 import time
 from openai import OpenAI
 
-# ── Credentials ──────────────────────────────────────────────────────────────
+# ── Credentials (required by checklist) ──────────────────────────────────────
 API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
-API_KEY      = os.getenv("HF_TOKEN") or os.getenv("API_KEY", "")
 MODEL_NAME   = os.getenv("MODEL_NAME", "Qwen/Qwen2.5-72B-Instruct")
+HF_TOKEN     = os.getenv("HF_TOKEN")
 
-if not API_KEY:
-    print("ERROR: Set HF_TOKEN or API_KEY environment variable.")
+if not HF_TOKEN:
+    print("ERROR: Set HF_TOKEN environment variable.")
     sys.exit(1)
 
-# ── Environment (import directly — no HTTP needed for inference.py) ───────────
+# ── Environment (direct import — no HTTP needed) ──────────────────────────────
 from env.environment import SQLQueryEnv
 from env.models import SQLAction
 
-# ── Config ───────────────────────────────────────────────────────────────────
-MAX_STEPS   = 3        # Agent gets 3 attempts per task
-TEMPERATURE = 0.1      # Low temp for deterministic SQL generation
+# ── Config ────────────────────────────────────────────────────────────────────
+MAX_STEPS   = 3
+TEMPERATURE = 0.1
 MAX_TOKENS  = 400
+TASKS       = ["task_easy", "task_medium", "task_hard"]
 
-TASKS = ["task_easy", "task_medium", "task_hard"]
-
-SYSTEM_PROMPT = """You are an expert SQL analyst. 
+SYSTEM_PROMPT = """You are an expert SQL analyst.
 Your job is to write a single, correct SQL SELECT query that answers the given question.
 
 Rules:
@@ -50,7 +45,7 @@ Rules:
 """
 
 
-def build_user_prompt(task_info: dict, attempt: int, last_sql: str | None, last_error: str | None, last_reward: float | None) -> str:
+def build_user_prompt(task_info, attempt, last_sql, last_error, last_reward):
     prompt = f"""Database schema:
 {task_info['schema_description']}
 
@@ -72,20 +67,21 @@ Hint:
     return prompt
 
 
-def run_task(client: OpenAI, env: SQLQueryEnv, task_id: str) -> dict:
-    print(f"\n{'='*60}")
-    print(f"  Task: {task_id}")
-    print(f"{'='*60}")
-
+def run_task(client, env, task_id):
     obs = env.reset(task_id=task_id)
-    print(f"  Difficulty : {obs.difficulty}")
-    print(f"  Question   : {obs.question[:80]}...")
+
+    # ── START log (required structured format) ────────────────────────────────
+    print(json.dumps({
+        "type": "START",
+        "task_id": task_id,
+        "difficulty": obs.difficulty,
+        "question": obs.question,
+    }))
 
     best_score = 0.0
     final_reward = None
 
     for attempt in range(1, MAX_STEPS + 1):
-        print(f"\n  [Attempt {attempt}/{MAX_STEPS}]")
 
         user_prompt = build_user_prompt(
             task_info={
@@ -99,7 +95,7 @@ def run_task(client: OpenAI, env: SQLQueryEnv, task_id: str) -> dict:
             last_reward=obs.last_reward,
         )
 
-        # Call LLM via OpenAI client
+        # ── LLM call via OpenAI client (required by checklist) ────────────────
         try:
             completion = client.chat.completions.create(
                 model=MODEL_NAME,
@@ -111,40 +107,45 @@ def run_task(client: OpenAI, env: SQLQueryEnv, task_id: str) -> dict:
                 max_tokens=MAX_TOKENS,
             )
             sql = completion.choices[0].message.content.strip()
-            # Strip markdown fences if model added them anyway
+            # Strip markdown fences if model added them
             if sql.startswith("```"):
                 lines = sql.split("\n")
-                sql = "\n".join(
-                    l for l in lines
-                    if not l.startswith("```")
-                ).strip()
+                sql = "\n".join(l for l in lines if not l.startswith("```")).strip()
         except Exception as e:
-            print(f"  LLM call failed: {e}")
             sql = "SELECT 1"
-
-        print(f"  SQL: {sql[:120]}{'...' if len(sql) > 120 else ''}")
 
         # Submit to environment
         obs, reward, done = env.step(SQLAction(sql=sql))
-
-        print(f"  Score     : {reward.total:.4f}")
-        print(f"  Syntax OK : {reward.syntax_valid}")
-        print(f"  Cols OK   : {reward.columns_correct}")
-        print(f"  Exact     : {reward.exact_match}")
-        if reward.error_message:
-            print(f"  Error     : {reward.error_message}")
-
         best_score = max(best_score, reward.total)
         final_reward = reward
 
+        # ── STEP log (required structured format) ─────────────────────────────
+        print(json.dumps({
+            "type": "STEP",
+            "task_id": task_id,
+            "attempt": attempt,
+            "sql": sql[:200],
+            "score": reward.total,
+            "syntax_valid": reward.syntax_valid,
+            "columns_correct": reward.columns_correct,
+            "exact_match": reward.exact_match,
+            "error": reward.error_message,
+        }))
+
         if done:
-            if reward.exact_match:
-                print(f"\n  ✓ Exact match achieved on attempt {attempt}!")
-            else:
-                print(f"\n  ✗ Max attempts reached.")
             break
 
-        time.sleep(0.5)  # Be polite to the API
+        time.sleep(0.5)
+
+    # ── END log (required structured format) ──────────────────────────────────
+    print(json.dumps({
+        "type": "END",
+        "task_id": task_id,
+        "difficulty": obs.difficulty,
+        "best_score": round(best_score, 4),
+        "exact_match": final_reward.exact_match if final_reward else False,
+        "attempts_used": attempt,
+    }))
 
     return {
         "task_id": task_id,
@@ -156,12 +157,7 @@ def run_task(client: OpenAI, env: SQLQueryEnv, task_id: str) -> dict:
 
 
 def main():
-    print("\nSQL Query Grader — OpenEnv Inference Script")
-    print(f"Model      : {MODEL_NAME}")
-    print(f"API URL    : {API_BASE_URL}")
-    print(f"Max steps  : {MAX_STEPS} per task")
-
-    client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
+    client = OpenAI(base_url=API_BASE_URL, api_key=HF_TOKEN)
     env    = SQLQueryEnv()
 
     results = []
@@ -174,19 +170,18 @@ def main():
     env.close()
     elapsed = time.time() - total_start
 
-    # ── Summary ──────────────────────────────────────────────────────────────
-    print(f"\n{'='*60}")
-    print("  FINAL SCORES")
-    print(f"{'='*60}")
-    for r in results:
-        status = "EXACT" if r["exact_match"] else f"partial"
-        print(f"  {r['task_id']:<14} ({r['difficulty']:<6})  score={r['best_score']:.4f}  [{status}]")
-
     avg = sum(r["best_score"] for r in results) / len(results)
-    print(f"\n  Average score : {avg:.4f}")
-    print(f"  Total runtime : {elapsed:.1f}s")
 
-    # Write JSON results for automated validation
+    # Final summary
+    print(json.dumps({
+        "type": "SUMMARY",
+        "model": MODEL_NAME,
+        "results": results,
+        "average_score": round(avg, 4),
+        "runtime_seconds": round(elapsed, 1),
+    }))
+
+    # Save scores file
     with open("baseline_scores.json", "w") as f:
         json.dump({
             "model": MODEL_NAME,
@@ -194,7 +189,6 @@ def main():
             "average_score": round(avg, 4),
             "runtime_seconds": round(elapsed, 1),
         }, f, indent=2)
-    print("\n  Results saved to baseline_scores.json")
 
 
 if __name__ == "__main__":
